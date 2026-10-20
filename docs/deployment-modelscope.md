@@ -28,6 +28,8 @@ vendor/ima-skill/ima_api.cjs
 
 请只在创空间的 Secrets 设置中填写这些值，不要写入 `app.py`、`README.md`、`.env` 或提交记录。应用加载时只检查密钥是否存在，不会在界面显示密钥值。
 
+`.env.example` 仅供本地开发参考。不要将本地 `.env` 上传到创空间仓库；创空间运行时从 Secrets 注入同名环境变量。
+
 可选的普通环境变量：
 
 - `IMA_KB_NAME`：ima 知识库名称；未设置时使用代码中的默认值。

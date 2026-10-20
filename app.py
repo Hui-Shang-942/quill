@@ -6,6 +6,7 @@ import os
 import threading
 
 import gradio as gr
+from dotenv import load_dotenv
 from PIL import Image
 
 from agent.catalog import MODELS
@@ -15,6 +16,9 @@ from agent.ima_client import ImaError
 from agent.llm import LLMError
 from agent.pipeline import Agent, Task
 from agent.platform_rules import PLATFORMS, SCENARIOS
+
+
+load_dotenv()
 
 
 REQUIRED_SECRETS = ("ANTHROPIC_API_KEY", "IMA_CLIENT_ID", "IMA_API_KEY")

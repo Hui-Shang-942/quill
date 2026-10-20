@@ -15,9 +15,12 @@ app_file: app.py
 
 ## 本地运行
 
-安装 `requirements.txt` 中的依赖并配置所需环境变量后执行：
+安装 `requirements.txt` 中的依赖，将 `.env.example` 复制为 `.env`，填入三个 API 凭证后执行：
 
 ```bash
+cp .env.example .env
 python app.py
 ```
+
+`.env` 仅用于本地运行，已加入 Git 忽略规则。部署到魔搭创空间时，请在创空间设置中配置 Secrets，不要上传 `.env`。
 

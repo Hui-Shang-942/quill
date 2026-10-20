@@ -3,3 +3,4 @@ anthropic>=0.75,<1
 httpx2>=2.10,<3
 nodejs-wheel==24.16.0
 Pillow>=10,<13
+python-dotenv>=1,<2

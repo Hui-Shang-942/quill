@@ -2,9 +2,14 @@
 .cache/
 .env
 *.key
-ima的API与密钥.md
 __pycache__/
 *.pyc
 .pytest_cache/
 # 运行产物（示例结果会单独挑选后放进 examples/）
 outputs/
+
+# 虚拟环境
+.venv/
+
+# 文档
+docs/
