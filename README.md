@@ -21,4 +21,3 @@ app_file: app.py
 python app.py
 ```
 
-本地 Flask 页面仍可通过 `python server.py` 启动。

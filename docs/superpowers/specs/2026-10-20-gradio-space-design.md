@@ -10,7 +10,7 @@
 - 将原 Flask `/api/check`、`/api/generate`、`/api/revise` 与 `/api/image` 的用户操作映射到 Gradio 回调；后端直接调用现有 Agent，避免同一进程内再启动 Flask 服务。
 - 继续使用 `agent/ima_client.py` 调用随仓库提供的 Node.js ima 客户端。通过创空间环境变量注入 Anthropic 与 ima 凭证，不将密钥写入代码或仓库。
 - 新增 `requirements.txt`（含 Gradio、Python 后端依赖与 Node.js wheel）、带 Gradio 元数据的 `README.md`，以及中文部署说明（创空间 Secrets 名称、启动方式和凭证配置）。
-- 保留 Flask 入口 `server.py` 供现有本地流程使用；创空间默认入口为 `app.py`。
+- 项目只保留 Gradio 入口 `app.py`；移除旧 Flask 服务及其静态前端，避免维护两套界面。
 
 ## 运行与错误处理
 

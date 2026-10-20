@@ -4,7 +4,7 @@
 
 **Goal:** Add a Gradio app entry point and deployment metadata so `quill-of-Huawei` can run as a public ModelScope Gradio Studio.
 
-**Architecture:** `app.py` creates a Gradio Blocks UI and calls `Agent.start` / `Agent.revise` directly. Existing Flask `server.py` remains available for local use. Python requirements install Gradio, existing backend libraries, and a Node.js runtime package used by the bundled ima API client.
+**Architecture:** `app.py` creates a Gradio Blocks UI and calls `Agent.start` / `Agent.revise` directly. Gradio is the only UI and application entry point. Python requirements install Gradio, existing backend libraries, and a Node.js runtime package used by the bundled ima API client.
 
 **Tech Stack:** Python, Gradio, existing Agent / ima API client, ModelScope Studio README metadata.
 
@@ -12,7 +12,7 @@
 
 - Keep all API credentials in Studio Secrets or local environment variables; never commit credentials.
 - Preserve current Agent behavior for retrieval, fact checks, compliance checks, revision and image attachment.
-- Use Gradio as the Studio entry point and retain `server.py` for local use.
+- Use Gradio as the only application entry point; remove the legacy Flask service and static frontend.
 - Public visitors share the deployed upstream API quotas.
 - Do not add or run tests unless the user requests testing.
 
