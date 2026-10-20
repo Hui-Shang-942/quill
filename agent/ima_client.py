@@ -63,7 +63,7 @@ class ImaClient:
     # ---------- 底层调用 ----------
     def _call(self, api: str, body: dict, retries: int = 2) -> dict:
         if not IMA_SCRIPT.exists():
-            raise ImaError("缺少官方 ima 脚本 vendor/ima-skill/ima_api.cjs")
+            raise ImaError("缺少官方 ima 脚本 agent/ima_api.cjs")
         last = ""
         for attempt in range(retries + 1):
             p = subprocess.run(

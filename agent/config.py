@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-IMA_SCRIPT = ROOT / "vendor" / "ima-skill" / "ima_api.cjs"
+IMA_SCRIPT = ROOT / "agent" / "ima_api.cjs"
 CACHE_DIR = ROOT / ".cache"          # 已在 .gitignore 中；缓存知识库内容，禁止提交
 OUTPUT_DIR = ROOT / "outputs"
 
