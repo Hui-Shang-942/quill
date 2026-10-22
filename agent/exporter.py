@@ -2,14 +2,36 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 from .config import OUTPUT_DIR
 from .ima_client import safe_name
 
 
-def render_markdown(res: dict) -> str:
+def _image_markdown_url(res: dict, image: dict, web_images: bool) -> str | None:
+    image_data = (res.get("_image_bytes") or {}).get(image.get("filename"))
+    if not image_data:
+        return None
+    raw, mime_type = image_data
+    extension = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}.get(mime_type)
+    if not extension:
+        return None
+    image_dir = OUTPUT_DIR / "markdown_images"
+    image_dir.mkdir(parents=True, exist_ok=True)
+    name = f"{hashlib.sha256(raw).hexdigest()[:20]}.{extension}"
+    path = image_dir / name
+    if not path.exists():
+        path.write_bytes(raw)
+    if web_images:
+        encoded_path = quote(path.resolve().as_posix(), safe="/:")
+        return f"/gradio_api/file={encoded_path}"
+    return f"markdown_images/{name}"
+
+
+def render_markdown(res: dict, *, web_images: bool = False) -> str:
     if res.get("status") != "ok":
         return f"# 未生成\n\n{res.get('message', '')}\n"
     sc, d = res["scene"], res["draft"]
@@ -30,32 +52,54 @@ def render_markdown(res: dict) -> str:
     L += ["- 资料标题："] + [f"  - {e['title']}（{e['path']}）" for e in res.get("evidence", [])] + [""]
 
     L += ["# 三、图文软文", ""]
-    if d.get("titles"):
-        L += ["## 标题", *[f"{i+1}. {t}" for i, t in enumerate(d["titles"])], ""]
+    if not res.get("publish_ready"):
+        L += ["> ⚠️ 核验未全部通过。以下内容仍完整展示供查看和修改，请先处理第四部分列出的待确认项，再决定是否发布。", ""]
+    publish_title = d.get("publish_title") or next(iter(d.get("titles") or []), "")
+    if publish_title:
+        L += [f"## {publish_title}", ""]
     poster = d.get("poster") or {}
     if any(poster.values()):
-        L += ["## 海报文案", f"- 主标题：{poster.get('main_title', '')}", f"- 副标题：{poster.get('sub_title', '')}"]
-        L += [f"- 卖点：{p}" for p in poster.get("points", [])]
-        L += [f"- 活动说明：{poster.get('note', '')}", ""]
+        if poster.get("sub_title"):
+            L += [f"### {poster['sub_title']}", ""]
+        L += [*poster.get("points", []), ""]
+        if poster.get("note"):
+            L += [poster["note"], ""]
     if d.get("lead"):
-        L += ["## 导语", d["lead"], ""]
-    imgs = {i["pid"]: i for i in d.get("images", [])}
-    for s in d.get("sections", []):
-        if s.get("heading"):
-            L.append(f"## {s['heading']}")
-        L.append(s.get("text", ""))
-        for pid in s.get("image_pids", []):
-            if pid in imgs:
-                L.append(f"\n> 【配图】{imgs[pid]['filename']}　{imgs[pid]['caption']}")
+        L += [d["lead"], ""]
+    images_by_pid = {image.get("pid"): image for image in d.get("images", [])}
+    rendered_pids = set()
+    for section in d.get("sections", []):
+        if section.get("heading"):
+            L.append(f"### {section['heading']}")
+        if section.get("text"):
+            L.append(section["text"])
         L.append("")
-    L += ["## 行动引导", d.get("cta", ""), ""]
+        for pid in section.get("image_pids", []):
+            image = images_by_pid.get(pid)
+            if image:
+                url = _image_markdown_url(res, image, web_images)
+                if url:
+                    alt = (image.get("caption") or image.get("filename") or "产品配图").replace("]", "）")
+                    L += [f"![{alt}]({url})", ""]
+                    rendered_pids.add(pid)
+    if d.get("cta"):
+        L += [d["cta"], ""]
     if d.get("tags"):
-        L += ["## 平台标签", " ".join(d["tags"]), ""]
+        L += [" ".join(d["tags"]), ""]
 
-    L += ["## 配图清单", "", "| 图片名称 | 来源 | 建议插入位置 | 图片说明 |", "|---|---|---|---|"]
-    for i in d.get("images", []):
-        L.append(f"| {i['filename']} | {i['source']} | {i['position']} | {i['caption']} |")
-    L.append("")
+    if d.get("images"):
+        remaining_images = [image for image in d["images"] if image.get("pid") not in rendered_pids]
+        if remaining_images:
+            L += ["## 其他配图", ""]
+            for image in remaining_images:
+                url = _image_markdown_url(res, image, web_images)
+                if url:
+                    alt = (image.get("caption") or image.get("filename") or "产品配图").replace("]", "）")
+                    L += [f"![{alt}]({url})", ""]
+        L += ["## 配图信息", "", "| 图片名称 | 来源 | 建议插入位置 | 图片说明 |", "|---|---|---|---|"]
+        for image in d["images"]:
+            L.append(f"| {image['filename']} | {image['source']} | {image['position']} | {image['caption']} |")
+        L.append("")
 
     v, c = res.get("verify", {}), res.get("compliance", {})
     n_ok = sum(1 for x in v.get("claims", []) if x.get("status") == "supported")
@@ -98,24 +142,3 @@ def export(res: dict, name: str | None = None) -> dict:
     return {"md": str(md_path), "json": str(js_path)}
 
 
-def plain_text(res: dict) -> str:
-    """纯文本版本，便于一键复制发布。"""
-    if res.get("status") != "ok":
-        return res.get("message", "")
-    d = res["draft"]
-    out = []
-    if d.get("titles"):
-        out.append(d["titles"][0])
-    poster = d.get("poster") or {}
-    if any(poster.values()):
-        out += [poster.get("main_title", ""), poster.get("sub_title", ""), *poster.get("points", []), poster.get("note", "")]
-    if d.get("lead"):
-        out.append(d["lead"])
-    for s in d.get("sections", []):
-        if s.get("heading"):
-            out.append(s["heading"])
-        out.append(s.get("text", ""))
-    out.append(d.get("cta", ""))
-    if d.get("tags"):
-        out.append(" ".join(d["tags"]))
-    return "\n\n".join(x for x in out if x)

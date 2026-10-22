@@ -7,7 +7,7 @@ import time
 import anthropic
 import httpx2
 
-from .config import EFFORT, MODEL
+from .config import EFFORT, MAX_OUTPUT_TOKENS, MODEL
 
 
 class LLMError(Exception):
@@ -46,27 +46,36 @@ class LLM:
         self.timings: list[dict] = []          # 每次调用：步骤名、耗时、token
         self._lock = threading.Lock()
 
-    def _once(self, system: str, user: str, max_tokens: int, stream: bool, effort: str):
+    def _once(self, system: str, user: str, max_tokens: int, stream: bool, effort: str,
+              on_delta=None):
         kw = dict(model=self.model, max_tokens=max_tokens, system=system,
                   output_config={"effort": effort},
                   messages=[{"role": "user", "content": user}])
         if stream:
             with self.client.messages.stream(**kw) as st:
+                if on_delta:
+                    for delta in st.text_stream:
+                        on_delta(delta)
                 return st.get_final_message()
         return self.client.messages.create(**kw)
 
     def text(self, system: str, user: str, max_tokens: int = 16000,
-             effort: str | None = None, label: str = "") -> str:
+             effort: str | None = None, label: str = "", on_delta=None, on_reset=None) -> str:
         effort = effort or self.effort
         t0 = time.time()
         # 中转服务偶发在流式输出中途断开：前两次走流式，之后降级为非流式
         transient = (anthropic.APIConnectionError, anthropic.RateLimitError,
                      anthropic.InternalServerError, httpx2.TransportError)
         last, msg = None, None
+        successful_stream = False
         for attempt in range(4):
             try:
-                msg = self._once(system, user, min(max_tokens, 16000) if attempt >= 2 else max_tokens,
-                                 stream=attempt < 2, effort=effort)
+                if attempt and on_reset:
+                    on_reset()
+                successful_stream = attempt < 2
+                msg = self._once(system, user, min(max_tokens, MAX_OUTPUT_TOKENS),
+                                 stream=attempt < 2, effort=effort,
+                                 on_delta=on_delta if attempt < 2 else None)
                 break
             except transient as e:
                 last = e
@@ -83,15 +92,24 @@ class LLM:
             raise LLMRefusal("模型出于安全策略拒绝了该请求")
         if msg.stop_reason == "max_tokens":
             raise LLMError("输出被截断（max_tokens），请缩短输入")
-        return "".join(b.text for b in msg.content if b.type == "text")
+        text = "".join(b.text for b in msg.content if b.type == "text")
+        if on_delta and not successful_stream:
+            # Attempts 2-3 fall back to non-streaming calls; reveal their response in
+            # small chunks during writing, before verification begins.
+            for offset in range(0, len(text), 48):
+                on_delta(text[offset:offset + 48])
+                time.sleep(0.012)
+        return text
 
     def json(self, system: str, user: str, max_tokens: int = 16000,
-             effort: str | None = None, label: str = ""):
+             effort: str | None = None, label: str = "", on_delta=None, on_reset=None):
         """要求模型只输出 JSON；解析失败时带着错误重试一次。"""
         sys_j = system + JSON_SUFFIX
-        out = self.text(sys_j, user, max_tokens, effort, label)
+        out = self.text(sys_j, user, max_tokens, effort, label, on_delta, on_reset)
         try:
             return extract_json(out)
         except ValueError as e:
+            if on_reset:
+                on_reset()
             retry = user + f"\n\n（上一次输出无法解析为 JSON：{e}。请只输出合法 JSON。）"
-            return extract_json(self.text(sys_j, retry, max_tokens, effort, label + "(重试)"))
+            return extract_json(self.text(sys_j, retry, max_tokens, effort, label + "(重试)", on_delta, on_reset))

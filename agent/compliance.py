@@ -67,7 +67,7 @@ def scan(text: str, allow_price: bool = False, allow_first_person: bool = False)
 
 def draft_to_text(draft: dict) -> str:
     """把结构化稿件拼成待扫描文本（含标题、导语、正文、行动引导、海报字段、图片说明）。"""
-    parts = list(draft.get("titles") or [])
+    parts = [draft.get("publish_title") or ""] + list(draft.get("titles") or [])
     parts.append(draft.get("lead") or "")
     for s in draft.get("sections") or []:
         parts.append(s.get("heading") or "")

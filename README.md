@@ -11,7 +11,7 @@ app_file: app.py
 
 ## 部署
 
-请按[魔搭创空间部署说明](docs/deployment-modelscope.md)创建 Gradio 创空间并配置 Secrets。请将本项目目录作为仓库根目录上传，保证 `app.py`、`agent/` 与 `agent/ima_api.cjs` 位于仓库根目录。
+请按[魔搭创空间部署说明](docs/deployment-modelscope.md)创建 Gradio 创空间并配置 Secrets。空间仓库根目录必须包含 `app.py`、`requirements.txt`、`agent/` 和 `UI-frontend-design/`。文档包含创建空间、配置凭证、发布、启动检查和常见故障排查步骤。
 
 ## 本地运行
 

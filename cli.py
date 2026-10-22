@@ -36,7 +36,15 @@ def main():
         return
     task = Task(raw=a.raw or f"{a.audience} {a.product} {a.platform} {a.extra}", model_text=a.product,
                 audience=a.audience, scenario=a.scenario, platform=a.platform, extra=a.extra)
-    res = agent.start(task, progress=lambda s: print(f"… {s}", file=sys.stderr))
+    def report_progress(event):
+        if isinstance(event, dict):
+            detail = event.get("detail") or ""
+            suffix = f" — {detail}" if detail else ""
+            print(f"… {event.get('label', '处理中')}{suffix}", file=sys.stderr)
+        else:
+            print(f"… {event}", file=sys.stderr)
+
+    res = agent.start(task, progress=report_progress)
     if res["status"] == "need_info":
         print("需要补充信息：")
         for q in res["questions"]:
