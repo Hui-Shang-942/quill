@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import re
 import time
 from pathlib import Path
 from urllib.parse import quote
@@ -31,7 +32,106 @@ def _image_markdown_url(res: dict, image: dict, web_images: bool) -> str | None:
     return f"markdown_images/{name}"
 
 
-def render_markdown(res: dict, *, web_images: bool = False) -> str:
+def _image_section_placements(images: list[dict], sections: list[dict]) -> dict[int, list[dict]]:
+    """Bind each selected image to a body section, filling missing model links sensibly."""
+    if not sections:
+        return {}
+
+    by_pid = {image.get("pid"): image for image in images if image.get("pid")}
+    placements: dict[int, list[dict]] = {}
+    assigned: set[str] = set()
+    for index, section in enumerate(sections):
+        for pid in section.get("image_pids") or []:
+            image = by_pid.get(pid)
+            if image and pid not in assigned:
+                placements.setdefault(index, []).append(image)
+                assigned.add(pid)
+
+    def position_index(image: dict) -> int | None:
+        position = str(image.get("position") or "")
+        ordinal = re.search(r"第\s*(\d+)\s*(?:段|节|部分|个段落)", position)
+        if ordinal:
+            return max(0, min(len(sections) - 1, int(ordinal.group(1)) - 1))
+        for numeral, value in (("一", 1), ("二", 2), ("三", 3), ("四", 4), ("五", 5), ("六", 6)):
+            if f"第{numeral}段" in position or f"第{numeral}部分" in position:
+                return min(len(sections) - 1, value - 1)
+
+        searchable_position = position.strip().casefold()
+        for index, section in enumerate(sections):
+            heading = str(section.get("heading") or "").strip().casefold()
+            if heading and heading in searchable_position:
+                return index
+
+        # Match distinctive words in the image rationale/position to section copy.
+        context = f"{position} {image.get('reason') or ''}".casefold()
+        terms = set(re.findall(r"[a-z0-9]{3,}", context))
+        for phrase in re.findall(r"[\u4e00-\u9fff]+", context):
+            terms.update(phrase[offset:offset + 2] for offset in range(len(phrase) - 1))
+        scored = []
+        for index, section in enumerate(sections):
+            text = f"{section.get('heading') or ''} {section.get('text') or ''}".casefold()
+            score = sum(1 for term in terms if term in text)
+            scored.append((score, index))
+        best_score, best_index = max(scored, default=(0, 0))
+        return best_index if best_score else None
+
+    for image in images:
+        pid = image.get("pid")
+        if pid and pid in assigned:
+            continue
+        index = position_index(image)
+        if index is None:
+            # Spread unlinked images across the body instead of collecting them at its end.
+            index = min(range(len(sections)), key=lambda item: len(placements.get(item, [])))
+        placements.setdefault(index, []).append(image)
+        if pid:
+            assigned.add(pid)
+    return placements
+
+
+def _image_markup(res: dict, image: dict, web_images: bool) -> str | None:
+    url = _image_markdown_url(res, image, web_images)
+    if not url:
+        return None
+    alt = (image.get("caption") or image.get("filename") or "产品配图").replace("]", "）")
+    return f"![{alt}]({url})"
+
+
+def _copy_with_inline_images(copy: str, sections: list[dict], placements: dict[int, list[dict]],
+                             res: dict, web_images: bool) -> str:
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n", copy.strip()) if part.strip()]
+    if not paragraphs:
+        return copy
+    by_paragraph: dict[int, list[str]] = {}
+    for section_index, images in placements.items():
+        section = sections[section_index]
+        anchor = None
+        for candidate in (section.get("text"), section.get("heading")):
+            candidate = str(candidate or "").strip()
+            if candidate:
+                anchor = next((i for i, paragraph in enumerate(paragraphs)
+                               if paragraph == candidate or candidate in paragraph), None)
+                if anchor is not None:
+                    break
+        if anchor is None:
+            # Edited copy may no longer match the original section text; keep its
+            # corresponding image near the same relative point in the body.
+            anchor = min(len(paragraphs) - 1,
+                         max(0, round((section_index + 1) * (len(paragraphs) - 1) /
+                                      max(1, len(sections)))))
+        for image in images:
+            markup = _image_markup(res, image, web_images)
+            if markup:
+                by_paragraph.setdefault(anchor, []).append(markup)
+    rendered = []
+    for index, paragraph in enumerate(paragraphs):
+        rendered.append(paragraph)
+        rendered.extend(by_paragraph.get(index, []))
+    return "\n\n".join(rendered)
+
+
+def render_markdown(res: dict, *, web_images: bool = False, copy_override: str | None = None,
+                    copy_needs_review: bool = False) -> str:
     if res.get("status") != "ok":
         return f"# 未生成\n\n{res.get('message', '')}\n"
     sc, d = res["scene"], res["draft"]
@@ -54,48 +154,52 @@ def render_markdown(res: dict, *, web_images: bool = False) -> str:
     L += ["# 三、图文软文", ""]
     if not res.get("publish_ready"):
         L += ["> ⚠️ 核验未全部通过。以下内容仍完整展示供查看和修改，请先处理第四部分列出的待确认项，再决定是否发布。", ""]
-    publish_title = d.get("publish_title") or next(iter(d.get("titles") or []), "")
-    if publish_title:
-        L += [f"## {publish_title}", ""]
+    if copy_needs_review:
+        L += ["> 人工或 AI 润色后的文案尚未重新执行原有事实与合规核验，发布前请人工复核。", ""]
     poster = d.get("poster") or {}
-    if any(poster.values()):
-        if poster.get("sub_title"):
-            L += [f"### {poster['sub_title']}", ""]
-        L += [*poster.get("points", []), ""]
-        if poster.get("note"):
-            L += [poster["note"], ""]
-    if d.get("lead"):
-        L += [d["lead"], ""]
-    images_by_pid = {image.get("pid"): image for image in d.get("images", [])}
-    rendered_pids = set()
-    for section in d.get("sections", []):
-        if section.get("heading"):
-            L.append(f"### {section['heading']}")
-        if section.get("text"):
-            L.append(section["text"])
-        L.append("")
-        for pid in section.get("image_pids", []):
-            image = images_by_pid.get(pid)
-            if image:
-                url = _image_markdown_url(res, image, web_images)
-                if url:
-                    alt = (image.get("caption") or image.get("filename") or "产品配图").replace("]", "）")
-                    L += [f"![{alt}]({url})", ""]
-                    rendered_pids.add(pid)
-    if d.get("cta"):
-        L += [d["cta"], ""]
-    if d.get("tags"):
-        L += [" ".join(d["tags"]), ""]
+    sections = d.get("sections") or []
+    placement_sections = sections or [{
+        "text": d.get("lead") or poster.get("note") or
+                next(iter(reversed(poster.get("points") or [])), "")
+    }]
+    image_placements = _image_section_placements(d.get("images", []), placement_sections)
+    if copy_override is None:
+        publish_title = d.get("publish_title") or next(iter(d.get("titles") or []), "")
+        if publish_title:
+            L += [f"## {publish_title}", ""]
+        if any(poster.values()):
+            if poster.get("sub_title"):
+                L += [f"### {poster['sub_title']}", ""]
+            L += [*poster.get("points", []), ""]
+            if poster.get("note"):
+                L += [poster["note"], ""]
+        if d.get("lead"):
+            L += [d["lead"], ""]
+        for section_index, section in enumerate(sections):
+            if section.get("heading"):
+                L.append(f"### {section['heading']}")
+            if section.get("text"):
+                L.append(section["text"])
+            L.append("")
+            for image in image_placements.get(section_index, []):
+                markup = _image_markup(res, image, web_images)
+                if markup:
+                    L += [markup, ""]
+        if not sections:
+            for image in image_placements.get(0, []):
+                markup = _image_markup(res, image, web_images)
+                if markup:
+                    L += [markup, ""]
+        if d.get("cta"):
+            L += [d["cta"], ""]
+        if d.get("tags"):
+            L += [" ".join(d["tags"]), ""]
+
+    else:
+        L += ["", _copy_with_inline_images(copy_override, placement_sections,
+                                            image_placements, res, web_images), ""]
 
     if d.get("images"):
-        remaining_images = [image for image in d["images"] if image.get("pid") not in rendered_pids]
-        if remaining_images:
-            L += ["## 其他配图", ""]
-            for image in remaining_images:
-                url = _image_markdown_url(res, image, web_images)
-                if url:
-                    alt = (image.get("caption") or image.get("filename") or "产品配图").replace("]", "）")
-                    L += [f"![{alt}]({url})", ""]
         L += ["## 配图信息", "", "| 图片名称 | 来源 | 建议插入位置 | 图片说明 |", "|---|---|---|---|"]
         for image in d["images"]:
             L.append(f"| {image['filename']} | {image['source']} | {image['position']} | {image['caption']} |")
@@ -131,12 +235,14 @@ def _doc_title(res: dict, doc_id: str | None) -> str:
     return doc_id or ""
 
 
-def export(res: dict, name: str | None = None) -> dict:
+def export(res: dict, name: str | None = None, *, copy_override: str | None = None,
+           copy_needs_review: bool = False) -> dict:
     """写出 .md 与 .json（json 用于留存运行记录；不含任何凭证/内部ID）。"""
     OUTPUT_DIR.mkdir(exist_ok=True)
     stem = safe_name(name or f"{res.get('model', 'result')}_{res.get('platform', '')}_{time.strftime('%H%M%S')}")
     md_path, js_path = OUTPUT_DIR / f"{stem}.md", OUTPUT_DIR / f"{stem}.json"
-    md_path.write_text(render_markdown(res), encoding="utf-8")
+    md_path.write_text(render_markdown(res, copy_override=copy_override,
+                                       copy_needs_review=copy_needs_review), encoding="utf-8")
     safe = {k: v for k, v in res.items() if k not in ("ima_calls", "_ctx", "_image_bytes")}
     js_path.write_text(json.dumps(safe, ensure_ascii=False, indent=2), encoding="utf-8")
     return {"md": str(md_path), "json": str(js_path)}

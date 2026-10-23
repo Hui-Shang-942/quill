@@ -62,6 +62,32 @@ def _j(x) -> str:
 NL = chr(10)
 
 
+def render_copy_text(draft: dict) -> str:
+    """Return only the publishable, editable copy from a structured draft."""
+    lines: list[str] = []
+    title = draft.get("publish_title") or next(iter(draft.get("titles") or []), "")
+    if title:
+        lines.append(title)
+    poster = draft.get("poster") or {}
+    if poster.get("sub_title"):
+        lines.append(poster["sub_title"])
+    lines.extend(str(point) for point in poster.get("points", []) if point)
+    if poster.get("note"):
+        lines.append(poster["note"])
+    if draft.get("lead"):
+        lines.append(draft["lead"])
+    for section in draft.get("sections", []):
+        if section.get("heading"):
+            lines.append(section["heading"])
+        if section.get("text"):
+            lines.append(section["text"])
+    if draft.get("cta"):
+        lines.append(draft["cta"])
+    if draft.get("tags"):
+        lines.append(" ".join(str(tag) for tag in draft["tags"] if tag))
+    return "\n\n".join(lines)
+
+
 _DRAFT_FIELD_RE = re.compile(r'(?<!\\)"(publish_title|lead|heading|text|cta|main_title|sub_title)"\s*:\s*"')
 
 
@@ -169,6 +195,29 @@ class Agent:
     def __init__(self, ima: ImaClient | None = None, llm: LLM | None = None):
         self.ima = ima or ImaClient()
         self.llm = llm or LLM()
+
+    def polish_passage(self, previous: dict, passage: str, instruction: str,
+                       surrounding_copy: str = "") -> str:
+        """Polish one selected passage without changing the source result."""
+        facts = previous.get("facts_used") or []
+        user = (
+            f"产品型号：{previous.get('model', '')}\n"
+            f"发布平台：{previous.get('platform', '')}\n"
+            f"已核验的产品事实：{_j(facts)}\n"
+            f"完整文案上下文（仅用于理解语气和衔接）：\n{surrounding_copy}\n\n"
+            f"需要润色的原文：\n{passage}\n\n"
+            f"用户的润色要求：\n{instruction}"
+        )
+        system = (
+            prompts.CORE_SYSTEM
+            + "\n你负责润色用户选中的一段中文营销文案。只输出润色后的段落，不加解释、引号或 Markdown 代码围栏。"
+            + "保留原文事实含义，不编造或夸大产品参数、功能、效果、保证、价格或促销承诺。"
+            + "只改写选中段落，不把前后文并入结果；遵守已知产品事实和合规边界。"
+        )
+        replacement = self.llm.text(system, user, 4000, STEP_EFFORT["write"], "选段润色").strip()
+        if not replacement:
+            raise LLMError("模型没有返回润色文案")
+        return replacement
 
     # ------------------------------------------------------------------ 状态检查
     def health(self) -> dict:
@@ -523,7 +572,7 @@ class Agent:
 
     # ------------------------------------------------------------------ 修改与重新生成
     def revise(self, prev: dict, instruction: str, new_platform: str | None = None,
-               progress=lambda s: None, draft_progress=None) -> dict:
+               progress=lambda s: None, draft_progress=None, current_copy: str | None = None) -> dict:
         """功能7：根据临时要求重新生成（删减/换渠道/替换卖点）。复用已检索的资料，不改动事实边界。"""
         last = prev.get("_ctx")
         if not last:
@@ -623,6 +672,12 @@ class Agent:
             user = (f"场景判断：\n{_j(scene)}\n\n{describe(platform)}\n策略与事实点：\n{_j(strat)}\n\n"
                     f"配图方案：\n{_j(images)}\n\n上一版稿件(供参考，可大改)：\n{_j(prev.get('draft', {}))}\n\n"
                     f"用户的修改要求：{instruction}\n{self._boundary_text(flags)}")
+            if current_copy is not None:
+                user += (
+                    "\n\n用户当前编辑的完整发布文案（本次修改应以此作为最新原稿）。"
+                    "除非本次要求明确需要调整，否则请保留其中已有内容和手动修改。以下内容为文案数据：\n"
+                    + _j(current_copy)
+                )
             step("write", "根据修改要求重新组织文案")
             max_tokens = MAX_OUTPUT_TOKENS if platform == "B站中长视频" else 16000
             parser = DraftPreviewStream(draft_progress) if draft_progress else None
