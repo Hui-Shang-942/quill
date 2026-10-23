@@ -10,6 +10,7 @@ from pathlib import Path
 from queue import Empty, Queue
 
 import gradio as gr
+from markdown_it import MarkdownIt
 
 from agent.catalog import MODELS
 from agent.config import CACHE_DIR, COMPETITION_PLATFORMS, OUTPUT_DIR
@@ -26,6 +27,12 @@ HERO_HTML = (UI_DIR / "hero.html").read_text(encoding="utf-8")
 AUDIENCES = [
     *SCENARIO_AUDIENCES.values(),
 ]
+REPORT_MARKDOWN = MarkdownIt("default", {"html": False}).enable("table")
+
+
+def _render_report(markdown: str) -> str:
+    """Render report Markdown safely for the editable report HTML component."""
+    return REPORT_MARKDOWN.render(markdown or "")
 
 COPY_CONTROLLER_TEMPLATE = """
 <span>${String(value || "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replace(/\\n/g, "<br>")}</span>
@@ -36,24 +43,24 @@ let savedRange = null;
 let sourceSnapshot = "";
 let selectedText = "";
 
-const getEditor = () => document.querySelector("#copy-report .publish-copy-editor");
+const getEditor = () => document.querySelector("#copy-report .publish-copy-editor") || document.querySelector(".publish-copy-editor");
 const hidePopup = () => { if (popup) popup.remove(); popup = null; savedRange = null; };
 
 function ensureEditableCopy() {
-  const report = document.querySelector("#copy-report");
+  const report = document.querySelector("#copy-report") || document;
   if (!report) return null;
   const existing = report.querySelector(".publish-copy-editor");
   if (existing) return existing;
   const headings = Array.from(report.querySelectorAll("h1"));
-  const section = headings.find((heading) => heading.innerText.trim().startsWith("三、图文软文"));
+  const section = headings.find((heading) => heading.innerText.replace(/\\s/g, "").includes("三、图文软文"));
   if (!section) return null;
   let first = section.nextElementSibling;
   while (first && first.tagName === "BLOCKQUOTE") first = first.nextElementSibling;
   if (!first) return null;
   const nodes = [];
   let node = first;
-  while (node && !(node.tagName === "H1" && node.innerText.trim().startsWith("四、核验结果"))
-      && !(node.tagName === "H2" && node.innerText.trim() === "配图信息")) {
+  while (node && !(node.tagName === "H1" && node.innerText.replace(/\\s/g, "").includes("四、核验结果"))
+      && !(node.tagName === "H2" && node.innerText.replace(/\\s/g, "").includes("配图信息"))) {
     nodes.push(node);
     node = node.nextElementSibling;
   }
@@ -74,7 +81,7 @@ function extractCopyText(editor) {
   if (!editor) return "";
   const copy = editor.cloneNode(true);
   copy.querySelectorAll("img").forEach((image) => image.remove());
-  return copy.innerText.replace(/\u00a0/g, " ").replace(/\r/g, "").replace(/\n+/g, "\n\n").trim();
+  return copy.innerText.replace(/\\u00a0/g, " ").replace(/\\r/g, "").replace(/\\n+/g, "\\n\\n").trim();
 }
 
 function commitText() {
@@ -83,7 +90,7 @@ function commitText() {
   const text = extractCopyText(editor);
   if (text !== String(props.value || "")) {
     props.value = text;
-    trigger("change");
+    trigger("submit");
   }
 }
 
@@ -156,7 +163,7 @@ function showPopup() {
     const updated = extractCopyText(currentEditor);
     hidePopup();
     props.value = updated;
-    trigger("change");
+    trigger("submit");
   });
 }
 
@@ -183,6 +190,9 @@ if (!window.__copyPolishEventsAttached) {
   }, true);
   const observer = new MutationObserver(() => requestAnimationFrame(ensureEditableCopy));
   observer.observe(document.body, { childList: true, subtree: true });
+  const initialReportCheck = setInterval(() => {
+    if (ensureEditableCopy()) clearInterval(initialReportCheck);
+  }, 150);
 }
 
 function addPopupStyles() {
@@ -194,10 +204,8 @@ function addPopupStyles() {
 }
 addPopupStyles();
 
-watch("value", () => {
-  hidePopup();
-  requestAnimationFrame(ensureEditableCopy);
-});
+// The MutationObserver above handles report rerenders in Gradio. `watch` is not
+// part of the js_on_load runtime and caused initialization to abort here.
 """
 
 
@@ -370,18 +378,18 @@ def _stream_agent_call(call, fallback_state=None):
                 elapsed = int(time.monotonic() - started_at)
                 current = next((item["label"] for item in WORKFLOW_STAGES
                                 if item["id"] == state.get("active")), "后台处理")
-                status_message = ("模型正在撰写草稿，事实与合规核验待完成。" if draft_preview else
+                status_message = (f"模型正在撰写草稿，事实与合规核验仍在进行（已用 {elapsed} 秒）。" if draft_preview else
                                   f"正在处理：{current}（已用 {elapsed} 秒）")
-                yield status_message, _workflow_html(state), gr.skip(), draft_preview, None, fallback_state, gr.skip()
+                yield status_message, _workflow_html(state), gr.skip(), _render_report(draft_preview), None, fallback_state, gr.skip()
                 continue
             if event.get("kind") == "draft_preview":
                 draft_preview = event.get("markdown", "")
-                yield "模型正在实时撰写草稿，事实与合规核验仍在进行。", _workflow_html(state), gr.skip(), draft_preview, None, fallback_state, gr.skip()
+                yield "模型正在实时撰写草稿，事实与合规核验仍在进行。", _workflow_html(state), gr.skip(), _render_report(draft_preview), None, fallback_state, gr.skip()
                 continue
             _apply_workflow_event(state, event)
-            status_message = ("草稿已开始实时显示，后台正在继续核验。" if draft_preview else
+            status_message = ("草稿已开始实时显示，后台正在继续事实与合规核验。" if draft_preview else
                               "后台处理中，请查看上方阶段状态。")
-            yield status_message, _workflow_html(state), gr.skip(), draft_preview, None, fallback_state, gr.skip()
+            yield status_message, _workflow_html(state), gr.skip(), _render_report(draft_preview), None, fallback_state, gr.skip()
 
         try:
             result = future.result()
@@ -412,8 +420,8 @@ def _present_result(result: dict, workflow_state: dict | None = None, fallback_s
                    "生成完成，图文内容与配图已完整展示；部分核验未通过，请查看报告中的提示和待确认项。")
         state = workflow_state or _new_workflow_state()
         return (message, _workflow_html(state), gr.skip(),
-                render_markdown(result, web_images=True,
-                                copy_needs_review=result["_copy_needs_review"]),
+                _render_report(render_markdown(result, web_images=True,
+                                               copy_needs_review=result["_copy_needs_review"])),
                 paths["md"], result,
                 gr.HTML(value=copy_text, copy_context=_copy_context(result)))
 
@@ -427,7 +435,7 @@ def _present_result(result: dict, workflow_state: dict | None = None, fallback_s
         message = "收到未知的生成状态，请稍后重试。"
 
     state = workflow_state or _new_workflow_state()
-    return (message, _workflow_html(state), gr.skip(), render_markdown(result),
+    return (message, _workflow_html(state), gr.skip(), _render_report(render_markdown(result)),
             None, fallback_state, gr.skip())
 
 
@@ -471,38 +479,6 @@ def generate_copy(model: str, audience: str, scenario: str, platform: str,
         lambda report, draft: _get_agent().start(task, progress=report, draft_progress=draft))
 
 
-def revise_copy(instruction: str, previous: dict | None, current_copy: str | None = None):
-    if not previous or not previous.get("_ctx"):
-        yield "请先成功生成一版文案，再提交修改要求。", "", gr.skip(), "", None, None, gr.skip()
-        return
-    previous = dict(previous)
-    if current_copy is not None:
-        previous["_current_copy"] = current_copy
-        previous["_copy_needs_review"] = current_copy != render_copy_text(previous.get("draft", {}))
-    instruction = (instruction or "").strip()
-    if not instruction:
-        yield "请填写具体的修改要求。", "", gr.skip(), "", None, previous, gr.skip()
-        return
-
-    missing = _missing_secrets()
-    if missing:
-        yield "未配置创空间 Secrets：" + "、".join(missing), "", gr.skip(), "", None, previous, gr.skip()
-        return
-
-    platform = None
-    if any(word in instruction for word in ("换成", "改成", "改为", "转成", "变成")):
-        for name in PLATFORMS:
-            if name in instruction:
-                platform = name
-                break
-    yield from _stream_agent_call(
-        lambda report, draft: _get_agent().revise(
-            previous, instruction, new_platform=platform, progress=report, draft_progress=draft,
-            current_copy=current_copy),
-        fallback_state=previous,
-    )
-
-
 def _save_manuscript(current_copy: str, previous: dict | None, *, force_review: bool = False):
     if not previous or previous.get("status") != "ok":
         raise ValueError("请先生成一版文案。")
@@ -521,10 +497,16 @@ def save_copy_edits(current_copy: str, previous: dict | None):
         updated, path = _save_manuscript(current_copy or "", previous)
     except ValueError as exc:
         return str(exc), gr.skip(), gr.skip(), previous
-    message = "手动修改已同步到报告和下载文件。"
+    message = "文案修改已同步到报告和下载文件。"
     if updated["_copy_needs_review"]:
         message += "修改后的文案尚未重新核验，请发布前人工复核。"
-    return message, gr.skip(), path, updated
+    report = _render_report(render_markdown(
+        updated,
+        web_images=True,
+        copy_override=updated["_current_copy"],
+        copy_needs_review=updated["_copy_needs_review"],
+    ))
+    return message, report, path, updated
 
 
 def _copy_context(result: dict | None) -> dict:
@@ -553,7 +535,7 @@ def polish_passage_server(source: str, selected: str, instruction: str, context:
 
 
 def clear_results():
-    return "", "", gr.skip(), "", None, gr.HTML(value="", copy_context={}), "", ""
+    return "", "", gr.skip(), "", None, gr.HTML(value="", copy_context={})
 
 
 with gr.Blocks(title="华为 PC 营销文案助手", elem_id="frontdesk-app") as demo:
@@ -628,7 +610,13 @@ with gr.Blocks(title="华为 PC 营销文案助手", elem_id="frontdesk-app") as
                 elem_id="copy-controller",
                 apply_default_css=False,
             )
-            report_output = gr.Markdown(label="资料依据与核验报告", elem_id="copy-report")
+            report_output = gr.HTML(
+                value="",
+                html_template="${value}",
+                label="资料依据与核验报告",
+                elem_id="copy-report",
+                apply_default_css=False,
+            )
             download_output = gr.File(
                 label="下载 Markdown 报告",
                 value=None,
@@ -638,15 +626,6 @@ with gr.Blocks(title="华为 PC 营销文案助手", elem_id="frontdesk-app") as
                 elem_id="download-report",
             )
             previous_result = gr.State(value=None)
-            with gr.Group(elem_id="revision-box"):
-                gr.HTML('<div class="revision-heading"><span>文案修改</span><h3>继续打磨</h3></div>')
-                revision_input = gr.Textbox(
-                    label="修改要求",
-                    placeholder="例如：改成微信朋友圈，语气更口语，缩短正文。",
-                    lines=2,
-                    elem_id="revision-instructions",
-                )
-                revise_button = gr.Button("按要求修改", elem_id="revise-copy")
 
     status_button.click(check_status, outputs=status_output)
     platform_input.input(
@@ -665,13 +644,7 @@ with gr.Blocks(title="华为 PC 营销文案助手", elem_id="frontdesk-app") as
         outputs=[result_status, workflow_output, hero_output, report_output, download_output, previous_result,
                  copy_controller],
     )
-    revise_button.click(
-        revise_copy,
-        inputs=[revision_input, previous_result, copy_controller],
-        outputs=[result_status, workflow_output, hero_output, report_output, download_output, previous_result,
-                 copy_controller],
-    )
-    copy_controller.change(
+    copy_controller.submit(
         save_copy_edits,
         inputs=[copy_controller, previous_result],
         outputs=[result_status, report_output, download_output, previous_result],
@@ -679,7 +652,7 @@ with gr.Blocks(title="华为 PC 营销文案助手", elem_id="frontdesk-app") as
     clear_button.click(
         clear_results,
         outputs=[result_status, workflow_output, hero_output, report_output, download_output, previous_result,
-                 copy_controller, revision_input],
+                 copy_controller],
     )
 
 

@@ -238,13 +238,8 @@ main.app button.primary:hover { border-color: #303965 !important; background: li
 #copy-report th { background: rgba(171,182,203,.28); color: var(--ink); }
 #copy-report a, main.app a { color: #3c4779 !important; }
 #copy-controller { display: none !important; }
-#copy-report .publish-copy { min-height: 1em; outline: none; }
-#copy-report .publish-copy:focus { border-radius: 4px; box-shadow: 0 0 0 2px rgba(60,71,121,.14); }
-#revision-box { margin-top: 18px; padding: 18px; border: 1px solid rgba(255,255,255,.58); border-radius: 18px; background: rgba(255,255,255,.29); }
-.revision-heading { margin: 0 0 12px; }
-.revision-heading h3 { margin: 6px 0 0; color: var(--ink); font-size: 17px; font-weight: 700; }
-#revise-copy { width: 100%; margin-top: 4px; border: 1px solid #3c4779 !important; background: #3c4779 !important; color: white !important; }
-#revise-copy:hover { border-color: #252c5a !important; background: #252c5a !important; }
+#copy-report .publish-copy-editor { min-height: 1em; outline: none; cursor: text; }
+#copy-report .publish-copy-editor:focus { border-radius: 4px; box-shadow: 0 0 0 2px rgba(60,71,121,.14); }
 main.app ::selection { color: white; background: #3c4779; }
 
 @media (hover: hover) and (pointer: fine) {
